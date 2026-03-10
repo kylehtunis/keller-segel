@@ -5,12 +5,13 @@ Implements the Keller-Segel model for Dictyostelium chemotaxis toward an
 external chemical attractant, solved with FVM via FiPy on a 2D rectangular domain.
 
 Two coupled PDEs:
-  ∂ρ/∂t = D_ρ ∇²ρ - χ ∇·(ρ ∇c) + μ_max·c·ρ·(1 - ρ/ρ_max)    (cell density)
-  ∂c/∂t = D_c ∇²c - βc - (μ_max/Y)·c·ρ                         (chemoattractant)
+  ∂ρ/∂t = D_ρ ∇²ρ - χ ∇·(ρ ∇c) + (μ_max/Y)·c·ρ·(1 - ρ/ρ_max)  (cell density)
+  ∂c/∂t = D_c ∇²c - βc - μ_max·c·ρ                              (chemoattractant)
 
-Growth follows Monod kinetics: cells consume the chemoattractant substrate at rate
-μ_max/Y and grow proportionally. The yield coefficient Y converts between substrate
-consumed and biomass produced. c is re-solved via quasi-steady-state at each timestep.
+Growth follows Monod kinetics: cells consume substrate at rate μ_max·c·ρ. The yield
+coefficient Y (substrate consumed per unit biomass) appears in the denominator of the
+growth term — lower Y means more efficient conversion of substrate to biomass.
+c is re-solved via quasi-steady-state at each timestep.
 """
 
 from dataclasses import dataclass, field
@@ -41,7 +42,7 @@ class KellerSegelParams:
     D_rho: float = 1e-3       # cell diffusion coefficient
     chi: float = 5e-3         # chemotactic sensitivity
     mu_max: float = 0.02      # maximum specific growth rate (Monod)
-    Y: float = 0.5            # yield coefficient (biomass per substrate consumed)
+    Y: float = 0.5            # yield coefficient (substrate consumed per unit biomass)
     rho_max: float = 5.0      # carrying capacity
 
     # Chemoattractant parameters
@@ -148,11 +149,10 @@ def build_c_equation_steady(
     Solves: 0 = D_c ∇²c - βc - (μ_max/Y)·c·ρ
 
     The decay and consumption terms are both proportional to c, so they
-    combine into a single ImplicitSourceTerm with coefficient -(β + μ_max/Y · ρ).
+    combine into a single ImplicitSourceTerm with coefficient -(β + μ_max · ρ).
     """
-    consumption_rate = params.mu_max / params.Y
     return DiffusionTerm(coeff=params.D_c, var=c) + ImplicitSourceTerm(
-        coeff=-(params.beta + consumption_rate * rho), var=c
+        coeff=-(params.beta + params.mu_max * rho), var=c
     )
 
 
@@ -166,11 +166,11 @@ def build_rho_equation(
     ∂ρ/∂t = D_ρ ∇²ρ - χ ∇·(ρ ∇c) + μ_max·c·ρ·(1 - ρ/ρ_max)
 
     - Chemotaxis: ExponentialConvectionTerm with velocity χ∇c (Scharfetter-Gummel)
-    - Monod-logistic growth: μ_max·c is the substrate-dependent growth rate,
-      split into implicit linear source (μ_max·c·ρ) and implicit quadratic
-      sink (-μ_max·c·ρ²/ρ_max) for numerical stability
+    - Monod-logistic growth: (μ_max/Y)·c is the biomass growth rate,
+      split into implicit linear source ((μ_max/Y)·c·ρ) and implicit quadratic
+      sink (-(μ_max/Y)·c·ρ²/ρ_max) for numerical stability
     """
-    growth_rate = params.mu_max * c  # substrate-dependent specific growth rate
+    growth_rate = (params.mu_max / params.Y) * c  # substrate consumption rate / yield
     return (
         TransientTerm(var=rho)
         == DiffusionTerm(coeff=params.D_rho, var=rho)
