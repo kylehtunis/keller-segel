@@ -6,7 +6,7 @@ separate nutrient and self-produced chemoattractant, solved with FVM via FiPy on
 2D rectangular domain.
 
 Three coupled PDEs:
-  ∂ρ/∂t = D_ρ ∇²ρ - χ ∇·(ρ ∇c) + (μ_max/Y)·s·ρ·(1 - ρ/ρ_max)  (cell density)
+  ∂ρ/∂t = D_ρ ∇²ρ - χ(1-ρ/ρ_max)∇·(ρ ∇c) + (μ_max/Y)·s·ρ·(1 - ρ/ρ_max)  (cell density)
   0 = D_c ∇²c - βc + αρ                                           (cAMP, quasi-SS)
   0 = D_s ∇²s - μ_max·s·ρ                                         (nutrient, quasi-SS)
 
@@ -31,43 +31,47 @@ from fipy import (
 
 @dataclass
 class KellerSegelParams:
-    """All model and numerical parameters with biologically-motivated defaults."""
+    """All model and numerical parameters in physical units (mm, min).
 
-    # Domain geometry
-    Lx: float = 10.0
-    Ly: float = 10.0
+    Spatial resolution: dx = dy = 0.01 mm = 10 μm (one Dictyostelium cell length).
+    Domain: 1 mm x 1 mm
+    """
+
+    # Domain geometry (mm)
+    Lx: float = 1.0
+    Ly: float = 1.0
     nx: int = 100
     ny: int = 100
 
     # Cell density parameters
-    D_rho: float = 0.125      # cell random motility
-    chi: float = 20.0         # chemotactic sensitivity to cAMP
-    mu_max: float = 0.1       # maximum specific growth rate (Monod)
-    Y: float = 0.5            # yield coefficient (substrate consumed per unit biomass)
-    rho_max: float = 5.0      # carrying capacity
+    D_rho: float = 5e-4       # cell random motility (mm²/min), ~50 μm²/min
+    chi: float = 0.015        # chemotactic sensitivity (mm²/(min·conc))
+    mu_max: float = 0.005     # max specific growth rate (min⁻¹), doubling ~2-3 hrs
+    Y: float = 0.5            # yield coefficient (substrate per unit biomass)
+    rho_max: float = 5.0      # carrying capacity (normalized density)
 
     # cAMP chemoattractant parameters (self-produced, no-flux BCs)
-    D_c: float = 1.0          # cAMP diffusion coefficient (reference scale)
-    beta: float = 0.1         # cAMP degradation by phosphodiesterase
-    alpha: float = 1.0        # cAMP production rate by cells
+    D_c: float = 0.024        # cAMP diffusion (mm²/min), literature value
+    beta: float = 0.5         # PDE degradation (min⁻¹), half-life ~1.4 min
+    alpha: float = 1.0        # cAMP production rate by cells (conc/(min·density))
 
     # Nutrient/substrate parameters (external, Dirichlet BCs)
-    D_s: float = 0.5          # nutrient diffusion coefficient
+    D_s: float = 0.012        # nutrient diffusion (mm²/min), ~half D_c
     # Boundary conditions for s (Dirichlet)
     # Scalar: same value on all edges
     # Dict: per-edge, e.g. {"left": 1.0, "right": 0.0, "top": 0.5, "bottom": 0.5}
     s_boundary: Union[float, dict] = 1.0
 
-    # Numerical parameters
-    dt: float = 0.01          # timestep for cell dynamics
-    total_time: float = 50.0  # total simulation time
-    sweep_count: int = 5      # nonlinear sweeps per timestep
-    snapshot_interval: int = 50  # save snapshot every N steps
+    # Numerical parameters (min)
+    dt: float = 0.1           # timestep (min)
+    total_time: float = 480.0 # total simulation time (min), 8 hours
+    sweep_count: int = 3      # nonlinear sweeps per timestep
+    snapshot_interval: int = 48  # save every 48 steps (~4.8 min real time)
 
     # Initial conditions
     rho_background: float = 0.1
     rho_bump_amplitude: float = 1.0
-    rho_bump_sigma: float = 1.0
+    rho_bump_sigma: float = 0.1  # mm, ~100 μm = ~10 cell lengths
 
     @property
     def dx(self) -> float:
@@ -194,17 +198,22 @@ def build_rho_equation(
 ) -> object:
     """Build the cell density equation for one timestep.
 
-    ∂ρ/∂t = D_ρ ∇²ρ - χ ∇·(ρ ∇c) + (μ_max/Y)·s·ρ·(1 - ρ/ρ_max)
+    ∂ρ/∂t = D_ρ ∇²ρ - χ(1 - ρ/ρ_max)∇·(ρ ∇c) + (μ_max/Y)·s·ρ·(1 - ρ/ρ_max)
 
-    - Chemotaxis: cells move up the cAMP gradient (c), NOT the nutrient gradient
+    - Volume-filling chemotaxis (Painter & Hillen 2002): sensitivity is multiplied
+      by (1 - ρ/ρ_max) so chemotactic flux → 0 as density approaches carrying capacity.
+      This prevents the finite-time blow-up of classical Keller-Segel.
     - Monod-logistic growth: (μ_max/Y)·s is the biomass growth rate from nutrient,
       split into implicit linear source and implicit quadratic sink for stability
     """
     growth_rate = (params.mu_max / params.Y) * s  # nutrient-driven growth
+    # Volume-filling: chemotactic velocity scaled by available space
+    volume_factor = 1.0 - rho.faceValue / params.rho_max
+    chemotaxis_coeff = params.chi * volume_factor * c.faceGrad
     return (
         TransientTerm(var=rho)
         == DiffusionTerm(coeff=params.D_rho, var=rho)
-        - ExponentialConvectionTerm(coeff=params.chi * c.faceGrad, var=rho)
+        - ExponentialConvectionTerm(coeff=chemotaxis_coeff, var=rho)
         + ImplicitSourceTerm(coeff=growth_rate, var=rho)
         + ImplicitSourceTerm(coeff=-growth_rate * rho / params.rho_max, var=rho)
     )
