@@ -1,5 +1,6 @@
 #pragma once
 #include <Eigen/Sparse>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -57,8 +58,11 @@ public:
         std::vector<double>              max_density;
     };
 
+    // Progress callback: called with (current_step, total_steps) after each step.
+    using ProgressCB = std::function<void(int, int)>;
+
     explicit KSSolver(const KSParams& p);
-    SnapshotData run();
+    SnapshotData run(ProgressCB progress = nullptr);
 
 private:
     using SpMat  = Eigen::SparseMatrix<double>;

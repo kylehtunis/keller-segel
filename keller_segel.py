@@ -444,7 +444,10 @@ class SimulationResult:
     params: KellerSegelParams = field(default_factory=KellerSegelParams)
 
 
-def _run_simulation_cpp(params: KellerSegelParams) -> SimulationResult:
+def _run_simulation_cpp(
+    params: KellerSegelParams,
+    progbar: bool = False,
+) -> SimulationResult:
     """Call the C++ Eigen/pybind11 backend."""
     assert _ks_core is not None, "_ks_core extension not loaded"
     d = {
@@ -470,7 +473,19 @@ def _run_simulation_cpp(params: KellerSegelParams) -> SimulationResult:
         "rho_bump_amplitude": params.rho_bump_amplitude,
         "rho_bump_sigma":   params.rho_bump_sigma,
     }
-    raw = _ks_core.run_simulation(d)
+
+    progress_cb = None
+    if progbar:
+        from tqdm.auto import tqdm
+        n_steps = int(params.total_time / params.dt)
+        pbar = tqdm(total=n_steps, desc="C++ solver", unit="step")
+
+        def progress_cb(step: int, total: int) -> None:
+            pbar.update(1)
+            if step == total:
+                pbar.close()
+
+    raw = _ks_core.run_simulation(d, progress_cb=progress_cb)
     return SimulationResult(
         times=list(raw["times"]),
         rho_snapshots=list(raw["rho_snapshots"]),
@@ -552,13 +567,13 @@ def run_simulation(
     """Run the full Keller-Segel simulation.
 
     Dispatches to the C++ Eigen backend (_ks_core) when available, falling
-    back to the FiPy implementation otherwise.  The ``progbar`` argument is
-    ignored by the C++ backend.
+    back to the FiPy implementation otherwise.  Both backends support the
+    ``progbar`` argument for tqdm progress reporting.
     """
     if params is None:
         params = KellerSegelParams()
     if _HAS_CPP:
-        return _run_simulation_cpp(params)
+        return _run_simulation_cpp(params, progbar=progbar)
     return _run_simulation_fipy(params, progbar=progbar)
 
 

@@ -19,9 +19,9 @@ jupyter nbconvert --to notebook --execute analysis.ipynb
 
 ## Dependencies
 
-- `fipy` — finite volume PDE solver (core dependency)
+- `fipy` — finite volume PDE solver (fallback backend)
 - `numpy`, `matplotlib` — numerics and visualization
-- `tqdm` — optional progress bar (activated via `progbar=True`)
+- `tqdm` — optional progress bar (activated via `progbar=True`); works with both C++ and FiPy backends
 
 ## Architecture
 

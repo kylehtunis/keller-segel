@@ -344,7 +344,7 @@ std::vector<double> KSSolver::snapshot_flat(const VecXd& v) const {
 // Main time loop
 // ===========================================================================
 
-KSSolver::SnapshotData KSSolver::run() {
+KSSolver::SnapshotData KSSolver::run(ProgressCB progress) {
     SnapshotData out;
 
     // Initial quasi-steady-state solve
@@ -387,6 +387,10 @@ KSSolver::SnapshotData KSSolver::run() {
             out.c_snaps.push_back(snapshot_flat(c_));
             out.s_snaps.push_back(snapshot_flat(s_));
         }
+
+        // 7. Progress callback
+        if (progress)
+            progress(step, p_.n_steps);
     }
 
     return out;

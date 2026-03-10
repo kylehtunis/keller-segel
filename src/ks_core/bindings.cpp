@@ -79,11 +79,28 @@ static py::array_t<double> flat_to_2d(
 // ---------------------------------------------------------------------------
 // Main entry point exposed to Python
 // ---------------------------------------------------------------------------
-static py::dict run_simulation(const py::dict& params_dict) {
+static py::dict run_simulation(const py::dict& params_dict,
+                               py::object progress_cb = py::none()) {
     KSParams p = dict_to_params(params_dict);
 
     KSSolver solver(p);
-    KSSolver::SnapshotData data = solver.run();
+
+    // Wrap the optional Python callback so the C++ side can call it.
+    // The heavy solve runs with the GIL released; we re-acquire it only
+    // for the brief callback invocation.
+    KSSolver::ProgressCB cpp_cb = nullptr;
+    if (!progress_cb.is_none()) {
+        cpp_cb = [&progress_cb](int step, int total) {
+            py::gil_scoped_acquire gil;
+            progress_cb(step, total);
+        };
+    }
+
+    KSSolver::SnapshotData data;
+    {
+        py::gil_scoped_release release;
+        data = solver.run(cpp_cb);
+    }
 
     const int nx = p.nx, ny = p.ny;
 
@@ -112,8 +129,10 @@ PYBIND11_MODULE(_ks_core, m) {
               "Drop-in replacement for the FiPy backend.";
     m.def("run_simulation", &run_simulation,
           py::arg("params"),
+          py::arg("progress_cb") = py::none(),
           "Run the Keller-Segel simulation.\n\n"
-          "params : dict  — all fields of KellerSegelParams\n"
-          "returns: dict  — times, rho_snapshots, c_snapshots, s_snapshots, "
-                           "total_mass, max_density");
+          "params      : dict     — all fields of KellerSegelParams\n"
+          "progress_cb : callable — optional callback(step, total) for progress\n"
+          "returns     : dict     — times, rho_snapshots, c_snapshots, s_snapshots, "
+                                   "total_mass, max_density");
 }
