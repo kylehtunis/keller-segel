@@ -1,0 +1,18 @@
+[build-system]
+requires = ["scikit-build-core>=0.8", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "keller-segel"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+fipy    = ["fipy", "scipy"]
+notebook = ["matplotlib", "tqdm", "jupyter"]
+
+[tool.scikit-build]
+cmake.build-type = "Release"
+# Do not install any Python package directory — the .so goes to the repo root
+wheel.packages = []
