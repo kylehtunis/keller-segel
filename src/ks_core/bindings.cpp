@@ -58,6 +58,15 @@ static KSParams dict_to_params(const py::dict& d) {
     p.rho_bump_amplitude = d["rho_bump_amplitude"].cast<double>();
     p.rho_bump_sigma     = d["rho_bump_sigma"].cast<double>();
 
+    // Optional custom IC (flat numpy array, column-major)
+    if (d.contains("rho_initial")) {
+        auto arr = d["rho_initial"].cast<py::array_t<double>>();
+        auto buf = arr.unchecked<1>();
+        p.rho_initial.resize(buf.shape(0));
+        for (py::ssize_t k = 0; k < buf.shape(0); ++k)
+            p.rho_initial[k] = buf(k);
+    }
+
     return p;
 }
 

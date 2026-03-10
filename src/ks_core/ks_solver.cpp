@@ -27,18 +27,25 @@ KSSolver::KSSolver(const KSParams& p)
 }
 
 void KSSolver::init_fields() {
-    const int nx = p_.nx, ny = p_.ny;
-    const double cx = p_.Lx / 2.0;
-    const double cy = p_.Ly / 2.0;
-    const double sig2 = 2.0 * p_.rho_bump_sigma * p_.rho_bump_sigma;
+    if (!p_.rho_initial.empty()) {
+        // Custom IC provided — copy directly
+        for (int k = 0; k < N_; ++k)
+            rho_[k] = p_.rho_initial[k];
+    } else {
+        // Default: uniform background + Gaussian bump at center
+        const int nx = p_.nx, ny = p_.ny;
+        const double cx = p_.Lx / 2.0;
+        const double cy = p_.Ly / 2.0;
+        const double sig2 = 2.0 * p_.rho_bump_sigma * p_.rho_bump_sigma;
 
-    for (int j = 0; j < ny; ++j) {
-        for (int i = 0; i < nx; ++i) {
-            int k = idx(i, j);
-            double r2 = (xc(i) - cx) * (xc(i) - cx)
-                      + (yc(j) - cy) * (yc(j) - cy);
-            rho_[k] = p_.rho_background
-                    + p_.rho_bump_amplitude * std::exp(-r2 / sig2);
+        for (int j = 0; j < ny; ++j) {
+            for (int i = 0; i < nx; ++i) {
+                int k = idx(i, j);
+                double r2 = (xc(i) - cx) * (xc(i) - cx)
+                          + (yc(j) - cy) * (yc(j) - cy);
+                rho_[k] = p_.rho_background
+                        + p_.rho_bump_amplitude * std::exp(-r2 / sig2);
+            }
         }
     }
     c_.setZero();

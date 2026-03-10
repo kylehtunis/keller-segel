@@ -35,6 +35,8 @@ struct KSParams {
     double rho_background;
     double rho_bump_amplitude;
     double rho_bump_sigma;
+    // Optional custom IC (flat, column-major: idx = j*nx + i). Empty → use Gaussian bump.
+    std::vector<double> rho_initial;
 
     // Time stepping
     double dt;

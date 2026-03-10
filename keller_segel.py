@@ -110,6 +110,8 @@ class KellerSegelParams:
     rho_background: float = 0.1
     rho_bump_amplitude: float = 1.0
     rho_bump_sigma: float = 0.1  # mm, ~100 μm = ~10 cell lengths
+    # Optional custom IC: 2D array (ny, nx) overriding Gaussian bump when set
+    rho_initial: object = None  # np.ndarray or None
 
     @property
     def dx(self) -> float:
@@ -155,6 +157,8 @@ class DimensionalParams:
     rho_background_cells_per_mm2: float = 1e3   # uniform background (10% of max)
     rho_bump_amplitude_cells_per_mm2: float = 2e3   # Gaussian IC perturbation
     rho_bump_sigma_mm: float = 0.2       # ~1 aggregation territory radius
+    # Optional custom IC: 2D array (ny, nx) in cells/mm². Overrides Gaussian bump.
+    rho_initial_cells_per_mm2: object = None  # np.ndarray or None
 
     # --- Nutrient ---
     D_s_mm2_per_min: float = 0.012       # 200 µm²/s small-molecule diffusion
@@ -234,6 +238,9 @@ class DimensionalParams:
         rho_bg_nd = self.rho_background_cells_per_mm2 / rho0
         rho_bump_nd = self.rho_bump_amplitude_cells_per_mm2 / rho0
         rho_sigma_nd = self.rho_bump_sigma_mm / L0
+        rho_init_nd = None
+        if self.rho_initial_cells_per_mm2 is not None:
+            rho_init_nd = np.asarray(self.rho_initial_cells_per_mm2) / rho0
 
         # Boundary condition for s: normalise scalar values; pass dict through
         if self.s_boundary_dict is not None:
@@ -266,6 +273,7 @@ class DimensionalParams:
             rho_background=rho_bg_nd,
             rho_bump_amplitude=rho_bump_nd,
             rho_bump_sigma=rho_sigma_nd,
+            rho_initial=rho_init_nd,
         )
 
     @classmethod
@@ -318,14 +326,19 @@ def create_mesh_and_variables(
     # Nutrient/substrate: Dirichlet BCs (food sources at boundaries)
     s = CellVariable(name="nutrient", mesh=mesh, value=0.0, hasOld=True)
 
-    # Initial condition for rho: uniform background + Gaussian bump at center
-    x, y = mesh.cellCenters
-    cx, cy = params.Lx / 2.0, params.Ly / 2.0
-    r2 = (x - cx) ** 2 + (y - cy) ** 2
-    rho.setValue(
-        params.rho_background
-        + params.rho_bump_amplitude * np.exp(-r2 / (2 * params.rho_bump_sigma**2))
-    )
+    # Initial condition for rho
+    if params.rho_initial is not None:
+        # Custom IC: (ny, nx) array. FiPy flat order = C-ravel of (ny, nx).
+        rho.setValue(np.asarray(params.rho_initial).ravel())
+    else:
+        # Default: uniform background + Gaussian bump at center
+        x, y = mesh.cellCenters
+        cx, cy = params.Lx / 2.0, params.Ly / 2.0
+        r2 = (x - cx) ** 2 + (y - cy) ** 2
+        rho.setValue(
+            params.rho_background
+            + params.rho_bump_amplitude * np.exp(-r2 / (2 * params.rho_bump_sigma**2))
+        )
 
     # c starts at 0.0 — will build up from cell production (no-flux BCs)
     c.setValue(0.0)
@@ -473,6 +486,10 @@ def _run_simulation_cpp(
         "rho_bump_amplitude": params.rho_bump_amplitude,
         "rho_bump_sigma":   params.rho_bump_sigma,
     }
+    if params.rho_initial is not None:
+        # Flat array in row-major C order matches idx = j*nx + i
+        arr = np.asarray(params.rho_initial, dtype=np.float64)
+        d["rho_initial"] = arr.ravel()
 
     progress_cb = None
     if progbar:
