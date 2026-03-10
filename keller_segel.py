@@ -1,17 +1,18 @@
 """
-Keller-Segel Slime Mold Chemotaxis Simulation
+Three-Variable Keller-Segel Slime Mold Chemotaxis Simulation
 
-Implements the Keller-Segel model for Dictyostelium chemotaxis toward an
-external chemical attractant, solved with FVM via FiPy on a 2D rectangular domain.
+Implements a three-variable Keller-Segel model for Dictyostelium chemotaxis with
+separate nutrient and self-produced chemoattractant, solved with FVM via FiPy on a
+2D rectangular domain.
 
-Two coupled PDEs:
-  ∂ρ/∂t = D_ρ ∇²ρ - χ ∇·(ρ ∇c) + (μ_max/Y)·c·ρ·(1 - ρ/ρ_max)  (cell density)
-  ∂c/∂t = D_c ∇²c - βc - μ_max·c·ρ                              (chemoattractant)
+Three coupled PDEs:
+  ∂ρ/∂t = D_ρ ∇²ρ - χ ∇·(ρ ∇c) + (μ_max/Y)·s·ρ·(1 - ρ/ρ_max)  (cell density)
+  0 = D_c ∇²c - βc + αρ                                           (cAMP, quasi-SS)
+  0 = D_s ∇²s - μ_max·s·ρ                                         (nutrient, quasi-SS)
 
-Growth follows Monod kinetics: cells consume substrate at rate μ_max·c·ρ. The yield
-coefficient Y (substrate consumed per unit biomass) appears in the denominator of the
-growth term — lower Y means more efficient conversion of substrate to biomass.
-c is re-solved via quasi-steady-state at each timestep.
+Cells chemotax up the cAMP gradient (c), which they produce themselves (rate α),
+creating a positive feedback loop for aggregation. Growth is fueled by nutrient (s),
+supplied at boundaries (Dirichlet BCs) and consumed by cells (Monod kinetics).
 """
 
 from dataclasses import dataclass, field
@@ -39,20 +40,23 @@ class KellerSegelParams:
     ny: int = 100
 
     # Cell density parameters
-    D_rho: float = 1e-3       # cell diffusion coefficient
-    chi: float = 5e-3         # chemotactic sensitivity
-    mu_max: float = 0.02      # maximum specific growth rate (Monod)
+    D_rho: float = 0.125      # cell random motility
+    chi: float = 20.0         # chemotactic sensitivity to cAMP
+    mu_max: float = 0.1       # maximum specific growth rate (Monod)
     Y: float = 0.5            # yield coefficient (substrate consumed per unit biomass)
     rho_max: float = 5.0      # carrying capacity
 
-    # Chemoattractant parameters
-    D_c: float = 1e-2         # chemical diffusion coefficient
-    beta: float = 0.05        # chemical decay rate
+    # cAMP chemoattractant parameters (self-produced, no-flux BCs)
+    D_c: float = 1.0          # cAMP diffusion coefficient (reference scale)
+    beta: float = 0.1         # cAMP degradation by phosphodiesterase
+    alpha: float = 1.0        # cAMP production rate by cells
 
-    # Boundary conditions for c (Dirichlet)
+    # Nutrient/substrate parameters (external, Dirichlet BCs)
+    D_s: float = 0.5          # nutrient diffusion coefficient
+    # Boundary conditions for s (Dirichlet)
     # Scalar: same value on all edges
     # Dict: per-edge, e.g. {"left": 1.0, "right": 0.0, "top": 0.5, "bottom": 0.5}
-    c_boundary: Union[float, dict] = 1.0
+    s_boundary: Union[float, dict] = 1.0
 
     # Numerical parameters
     dt: float = 0.01          # timestep for cell dynamics
@@ -80,17 +84,23 @@ class KellerSegelParams:
 
 def create_mesh_and_variables(
     params: KellerSegelParams,
-) -> tuple[Grid2D, CellVariable, CellVariable]:
+) -> tuple[Grid2D, CellVariable, CellVariable, CellVariable]:
     """Create the FiPy mesh and cell variables with initial/boundary conditions.
 
     Returns:
-        (mesh, rho, c) where rho is cell density and c is chemoattractant concentration.
+        (mesh, rho, c, s) where rho is cell density, c is cAMP chemoattractant,
+        and s is nutrient/substrate concentration.
     """
     mesh = Grid2D(dx=params.dx, dy=params.dy, nx=params.nx, ny=params.ny)
 
     # Cell density: hasOld=True for TransientTerm sweeping
     rho = CellVariable(name="cell_density", mesh=mesh, value=0.0, hasOld=True)
-    c = CellVariable(name="chemoattractant", mesh=mesh, value=0.0, hasOld=True)
+
+    # cAMP chemoattractant: no-flux BCs (FiPy default), starts at 0
+    c = CellVariable(name="cAMP", mesh=mesh, value=0.0, hasOld=True)
+
+    # Nutrient/substrate: Dirichlet BCs (food sources at boundaries)
+    s = CellVariable(name="nutrient", mesh=mesh, value=0.0, hasOld=True)
 
     # Initial condition for rho: uniform background + Gaussian bump at center
     x, y = mesh.cellCenters
@@ -101,32 +111,33 @@ def create_mesh_and_variables(
         + params.rho_bump_amplitude * np.exp(-r2 / (2 * params.rho_bump_sigma**2))
     )
 
-    # Initial condition for c: 0.0 (will reach steady state from BCs)
+    # c starts at 0.0 — will build up from cell production (no-flux BCs)
     c.setValue(0.0)
 
-    # Boundary conditions for c: Dirichlet on all edges
-    _apply_c_boundary_conditions(c, mesh, params.c_boundary)
+    # s starts at 0.0 — will reach steady state from Dirichlet BCs
+    s.setValue(0.0)
+    _apply_dirichlet_bcs(s, mesh, params.s_boundary)
 
     # rho: no-flux (zero Neumann) is FiPy's default -- no constrain needed
 
-    return mesh, rho, c
+    return mesh, rho, c, s
 
 
-def _apply_c_boundary_conditions(
-    c: CellVariable,
+def _apply_dirichlet_bcs(
+    var: CellVariable,
     mesh: Grid2D,
-    c_boundary: Union[float, dict],
+    boundary: Union[float, dict],
 ) -> None:
-    """Apply Dirichlet BCs to chemoattractant on each edge."""
-    if isinstance(c_boundary, (int, float)):
+    """Apply Dirichlet BCs to a variable on each edge."""
+    if isinstance(boundary, (int, float)):
         bc_dict = {
-            "left": float(c_boundary),
-            "right": float(c_boundary),
-            "top": float(c_boundary),
-            "bottom": float(c_boundary),
+            "left": float(boundary),
+            "right": float(boundary),
+            "top": float(boundary),
+            "bottom": float(boundary),
         }
     else:
-        bc_dict = c_boundary
+        bc_dict = boundary
 
     face_map = {
         "left": mesh.facesLeft,
@@ -136,7 +147,7 @@ def _apply_c_boundary_conditions(
     }
 
     for edge, value in bc_dict.items():
-        c.constrain(value, where=face_map[edge])
+        var.constrain(value, where=face_map[edge])
 
 
 def build_c_equation_steady(
@@ -144,33 +155,52 @@ def build_c_equation_steady(
     rho: CellVariable,
     params: KellerSegelParams,
 ) -> object:
-    """Build the quasi-steady-state chemoattractant equation.
+    """Build the quasi-steady-state cAMP equation.
 
-    Solves: 0 = D_c ∇²c - βc - (μ_max/Y)·c·ρ
+    Solves: 0 = D_c ∇²c - βc + αρ
 
-    The decay and consumption terms are both proportional to c, so they
-    combine into a single ImplicitSourceTerm with coefficient -(β + μ_max · ρ).
+    cAMP is self-produced by cells (αρ) and degraded by phosphodiesterase (βc).
+    No-flux BCs — signal stays in domain. The αρ term is explicit (depends on ρ).
     """
-    return DiffusionTerm(coeff=params.D_c, var=c) + ImplicitSourceTerm(
-        coeff=-(params.beta + params.mu_max * rho), var=c
+    return (
+        DiffusionTerm(coeff=params.D_c, var=c)
+        + ImplicitSourceTerm(coeff=-params.beta, var=c)
+        + params.alpha * rho
+    )
+
+
+def build_s_equation_steady(
+    s: CellVariable,
+    rho: CellVariable,
+    params: KellerSegelParams,
+) -> object:
+    """Build the quasi-steady-state nutrient equation.
+
+    Solves: 0 = D_s ∇²s - μ_max·s·ρ
+
+    Nutrient diffuses from Dirichlet boundaries and is consumed by cells.
+    Consumption is implicit in s (good for stability).
+    """
+    return DiffusionTerm(coeff=params.D_s, var=s) + ImplicitSourceTerm(
+        coeff=-params.mu_max * rho, var=s
     )
 
 
 def build_rho_equation(
     rho: CellVariable,
     c: CellVariable,
+    s: CellVariable,
     params: KellerSegelParams,
 ) -> object:
     """Build the cell density equation for one timestep.
 
-    ∂ρ/∂t = D_ρ ∇²ρ - χ ∇·(ρ ∇c) + μ_max·c·ρ·(1 - ρ/ρ_max)
+    ∂ρ/∂t = D_ρ ∇²ρ - χ ∇·(ρ ∇c) + (μ_max/Y)·s·ρ·(1 - ρ/ρ_max)
 
-    - Chemotaxis: ExponentialConvectionTerm with velocity χ∇c (Scharfetter-Gummel)
-    - Monod-logistic growth: (μ_max/Y)·c is the biomass growth rate,
-      split into implicit linear source ((μ_max/Y)·c·ρ) and implicit quadratic
-      sink (-(μ_max/Y)·c·ρ²/ρ_max) for numerical stability
+    - Chemotaxis: cells move up the cAMP gradient (c), NOT the nutrient gradient
+    - Monod-logistic growth: (μ_max/Y)·s is the biomass growth rate from nutrient,
+      split into implicit linear source and implicit quadratic sink for stability
     """
-    growth_rate = (params.mu_max / params.Y) * c  # substrate consumption rate / yield
+    growth_rate = (params.mu_max / params.Y) * s  # nutrient-driven growth
     return (
         TransientTerm(var=rho)
         == DiffusionTerm(coeff=params.D_rho, var=rho)
@@ -187,6 +217,7 @@ class SimulationResult:
     times: list[float] = field(default_factory=list)
     rho_snapshots: list[np.ndarray] = field(default_factory=list)
     c_snapshots: list[np.ndarray] = field(default_factory=list)
+    s_snapshots: list[np.ndarray] = field(default_factory=list)
     total_mass: list[float] = field(default_factory=list)
     max_density: list[float] = field(default_factory=list)
     params: KellerSegelParams = field(default_factory=KellerSegelParams)
@@ -210,16 +241,18 @@ def run_simulation(
     if progbar:
         from tqdm.auto import tqdm
 
-    mesh, rho, c = create_mesh_and_variables(params)
+    mesh, rho, c, s = create_mesh_and_variables(params)
 
     result = SimulationResult(params=params)
 
-    # Solve initial quasi-steady-state c (given initial rho)
+    # Solve initial quasi-steady-state c and s (given initial rho)
     eq_c = build_c_equation_steady(c, rho, params)
     eq_c.solve(var=c)
+    eq_s = build_s_equation_steady(s, rho, params)
+    eq_s.solve(var=s)
 
     # Record initial state
-    _record_snapshot(result, 0.0, rho, c, mesh, params)
+    _record_snapshot(result, 0.0, rho, c, s, mesh, params)
 
     steps = range(1, params.n_steps + 1)
     if progbar:
@@ -228,27 +261,30 @@ def run_simulation(
     for step in steps:
         t = step * params.dt
 
-        # 1. Solve c to quasi-steady-state given current rho
-        #    (must rebuild equation since consumption depends on rho)
+        # 1. Solve c to quasi-steady-state (cAMP: self-produced by cells)
         eq_c = build_c_equation_steady(c, rho, params)
         eq_c.solve(var=c)
 
-        # 2. Advance rho using updated c gradient
+        # 2. Solve s to quasi-steady-state (nutrient: consumed by cells)
+        eq_s = build_s_equation_steady(s, rho, params)
+        eq_s.solve(var=s)
+
+        # 3. Advance rho using c gradient (chemotaxis) and s (growth)
         rho.updateOld()
         for _sweep in range(params.sweep_count):
-            eq_rho = build_rho_equation(rho, c, params)
+            eq_rho = build_rho_equation(rho, c, s, params)
             eq_rho.sweep(var=rho, dt=params.dt)
 
-        # 3. Clamp rho >= 0 to prevent negative densities
+        # 4. Clamp rho >= 0 to prevent negative densities
         rho.setValue(np.maximum(rho.value, 0.0))
 
-        # 4. Record diagnostics
+        # 5. Record diagnostics
         result.total_mass.append(compute_total_mass(rho, mesh))
         result.max_density.append(compute_max_density(rho))
 
-        # 5. Save snapshot at intervals
+        # 6. Save snapshot at intervals
         if step % params.snapshot_interval == 0:
-            _record_snapshot(result, t, rho, c, mesh, params)
+            _record_snapshot(result, t, rho, c, s, mesh, params)
 
         if not progbar and step % (params.n_steps // 10 or 1) == 0:
             print(
@@ -265,6 +301,7 @@ def _record_snapshot(
     t: float,
     rho: CellVariable,
     c: CellVariable,
+    s: CellVariable,
     mesh: Grid2D,
     params: KellerSegelParams,
 ) -> None:
@@ -272,6 +309,7 @@ def _record_snapshot(
     result.times.append(t)
     result.rho_snapshots.append(get_2d_array(rho, params.nx, params.ny))
     result.c_snapshots.append(get_2d_array(c, params.nx, params.ny))
+    result.s_snapshots.append(get_2d_array(s, params.nx, params.ny))
     result.total_mass.append(compute_total_mass(rho, mesh))
     result.max_density.append(compute_max_density(rho))
 
