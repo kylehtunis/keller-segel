@@ -110,6 +110,8 @@ class KellerSegelParams:
     rho_background: float = 0.1
     rho_bump_amplitude: float = 1.0
     rho_bump_sigma: float = 0.1  # mm, ~100 μm = ~10 cell lengths
+    n_bumps: int = 1             # number of randomly placed Gaussian bumps
+    rho_bump_seed: object = None # int seed for bump placement RNG, or None
     # Optional custom IC: 2D array (ny, nx) overriding Gaussian bump when set
     rho_initial: object = None  # np.ndarray or None
 
@@ -157,6 +159,8 @@ class DimensionalParams:
     rho_background_cells_per_mm2: float = 1e3   # uniform background (10% of max)
     rho_bump_amplitude_cells_per_mm2: float = 2e3   # Gaussian IC perturbation
     rho_bump_sigma_mm: float = 0.2       # ~1 aggregation territory radius
+    n_bumps: int = 1                     # number of randomly placed Gaussian bumps
+    rho_bump_seed: object = None         # int seed for bump placement RNG, or None
     # Optional custom IC: 2D array (ny, nx) in cells/mm². Overrides Gaussian bump.
     rho_initial_cells_per_mm2: object = None  # np.ndarray or None
 
@@ -276,6 +280,8 @@ class DimensionalParams:
             rho_background=rho_bg_nd,
             rho_bump_amplitude=rho_bump_nd,
             rho_bump_sigma=rho_sigma_nd,
+            n_bumps=self.n_bumps,
+            rho_bump_seed=self.rho_bump_seed,
             rho_initial=rho_init_nd,
         )
 
@@ -309,6 +315,43 @@ class DimensionalParams:
         )
 
 
+def _make_rho_ic(params: "KellerSegelParams") -> np.ndarray:
+    """Return a (ny, nx) array for the initial cell density.
+
+    If ``params.rho_initial`` is set it is returned as-is.
+    Otherwise ``params.n_bumps`` Gaussian bumps are placed randomly (or at the
+    centre when ``n_bumps == 1``), summed onto a uniform background, and clamped
+    to ``[0, rho_max]``.  ``params.rho_bump_seed`` seeds the RNG.
+    """
+    ny, nx = params.ny, params.nx
+    if params.rho_initial is not None:
+        return np.asarray(params.rho_initial, dtype=float)
+
+    # Grid of cell-centre coordinates (row-major: axis 0 = y, axis 1 = x)
+    xs = (np.arange(nx) + 0.5) * params.dx   # shape (nx,)
+    ys = (np.arange(ny) + 0.5) * params.dy   # shape (ny,)
+    XX, YY = np.meshgrid(xs, ys)              # both (ny, nx)
+
+    rho = np.full((ny, nx), params.rho_background, dtype=float)
+
+    rng = np.random.default_rng(params.rho_bump_seed)
+    if params.n_bumps == 1:
+        centres = [(params.Lx / 2.0, params.Ly / 2.0)]
+    else:
+        # Keep bumps at least sigma away from the boundary so the IC is smooth
+        margin = params.rho_bump_sigma
+        cx = rng.uniform(margin, params.Lx - margin, size=params.n_bumps)
+        cy = rng.uniform(margin, params.Ly - margin, size=params.n_bumps)
+        centres = list(zip(cx, cy))
+
+    sig2 = 2.0 * params.rho_bump_sigma ** 2
+    for bx, by in centres:
+        r2 = (XX - bx) ** 2 + (YY - by) ** 2
+        rho += params.rho_bump_amplitude * np.exp(-r2 / sig2)
+
+    return np.clip(rho, 0.0, params.rho_max)
+
+
 def create_mesh_and_variables(
     params: KellerSegelParams,
 ) -> tuple[Grid2D, CellVariable, CellVariable, CellVariable]:
@@ -329,19 +372,8 @@ def create_mesh_and_variables(
     # Nutrient/substrate: Dirichlet BCs (food sources at boundaries)
     s = CellVariable(name="nutrient", mesh=mesh, value=0.0, hasOld=True)
 
-    # Initial condition for rho
-    if params.rho_initial is not None:
-        # Custom IC: (ny, nx) array. FiPy flat order = C-ravel of (ny, nx).
-        rho.setValue(np.asarray(params.rho_initial).ravel())
-    else:
-        # Default: uniform background + Gaussian bump at center
-        x, y = mesh.cellCenters
-        cx, cy = params.Lx / 2.0, params.Ly / 2.0
-        r2 = (x - cx) ** 2 + (y - cy) ** 2
-        rho.setValue(
-            params.rho_background
-            + params.rho_bump_amplitude * np.exp(-r2 / (2 * params.rho_bump_sigma**2))
-        )
+    # Initial condition for rho: (ny, nx) → flat C-order for FiPy
+    rho.setValue(_make_rho_ic(params).ravel())
 
     # c starts at 0.0 — will build up from cell production (no-flux BCs)
     c.setValue(0.0)
@@ -492,10 +524,9 @@ def _run_simulation_cpp(
         "rho_bump_amplitude": params.rho_bump_amplitude,
         "rho_bump_sigma":   params.rho_bump_sigma,
     }
-    if params.rho_initial is not None:
-        # Flat array in row-major C order matches idx = j*nx + i
-        arr = np.asarray(params.rho_initial, dtype=np.float64)
-        d["rho_initial"] = arr.ravel()
+    # Always pass IC as a pre-computed flat array (handles n_bumps > 1 and
+    # custom rho_initial uniformly; C++ ignores rho_bump_* when present).
+    d["rho_initial"] = _make_rho_ic(params).ravel().astype(np.float64)
 
     progress_cb = None
     if progbar:

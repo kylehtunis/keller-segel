@@ -63,6 +63,8 @@ A three-variable Keller-Segel PDE system for *Dictyostelium* chemotaxis on a 2D 
 
 - **Custom initial conditions**: `rho_initial` (2D array, shape `(ny, nx)`) can be passed to override the default Gaussian bump IC. `DimensionalParams` accepts `rho_initial_cells_per_mm2` in physical units.
 
+- **Multi-bump IC**: `n_bumps` (int, default 1) places that many Gaussian bumps at random positions. With `n_bumps=1` the bump stays at the domain centre (legacy behaviour). `rho_bump_seed` (int or None) seeds the RNG for reproducibility. The helper `_make_rho_ic(params)` generates the `(ny, nx)` IC array and is used by both backends.
+
 ### Key design separation
 
 `c` drives chemotaxis (self-produced, no-flux BCs, not consumed) and `s` drives growth (externally supplied via Dirichlet BCs, consumed by cells). Mixing these roles breaks the gradient driving aggregation.
