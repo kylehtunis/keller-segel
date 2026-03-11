@@ -67,6 +67,19 @@ static KSParams dict_to_params(const py::dict& d) {
             p.rho_initial[k] = buf(k);
     }
 
+    // Optional s initial condition
+    if (d.contains("s_initial")) {
+        auto arr = d["s_initial"].cast<py::array_t<double>>();
+        auto buf = arr.unchecked<1>();
+        p.s_initial.resize(buf.shape(0));
+        for (py::ssize_t k = 0; k < buf.shape(0); ++k)
+            p.s_initial[k] = buf(k);
+    }
+
+    // No-flux BC flag for s
+    if (d.contains("s_no_flux_bc"))
+        p.s_no_flux_bc = d["s_no_flux_bc"].cast<bool>();
+
     return p;
 }
 

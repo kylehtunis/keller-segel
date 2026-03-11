@@ -115,6 +115,11 @@ class KellerSegelParams:
     # Optional custom IC: 2D array (ny, nx) overriding Gaussian bump when set
     rho_initial: object = None  # np.ndarray or None
 
+    # Optional s initial condition: 2D array (ny, nx) at t=0
+    s_initial: object = None   # np.ndarray or None
+    # When True, s uses no-flux (zero Neumann) BCs instead of Dirichlet
+    s_no_flux_bc: bool = False
+
     @property
     def dx(self) -> float:
         return self.Lx / self.nx
@@ -164,8 +169,13 @@ class DimensionalParams:
     # Optional custom IC: 2D array (ny, nx) in cells/mm². Overrides Gaussian bump.
     rho_initial_cells_per_mm2: object = None  # np.ndarray or None
 
+    # Optional s initial condition: 2D array (ny, nx) in µg/mL
+    s_initial_ug_per_mL: object = None  # np.ndarray or None
+    # When True, s uses no-flux (zero Neumann) BCs instead of Dirichlet
+    s_no_flux_bc: bool = False
+
     # --- Nutrient ---
-    D_s_mm2_per_min: float = 0.001       # ~17 µm²/s slow bacterial diffusion
+    D_s_mm2_per_min: float = 0.003       # ~50 µm²/s bacterial diffusion
     K_s_ug_per_mL: float = 2.0           # Monod half-saturation constant (= s_boundary)
     s_boundary_ug_per_mL: float = 2.0    # Dirichlet boundary nutrient concentration
     mu_max_per_min: float = 0.002        # max specific growth rate (~5.8 hr doubling)
@@ -246,6 +256,12 @@ class DimensionalParams:
         if self.rho_initial_cells_per_mm2 is not None:
             rho_init_nd = np.asarray(self.rho_initial_cells_per_mm2) / rho0
 
+        # s initial condition: normalise by s0 (reference nutrient scale)
+        s_init_nd = None
+        if self.s_initial_ug_per_mL is not None:
+            s_arr = np.asarray(self.s_initial_ug_per_mL, dtype=float)
+            s_init_nd = s_arr / s0 if s0 > 0.0 else s_arr
+
         # Boundary condition for s: normalise scalar values; pass dict through.
         # When s0=0 (no nutrient), boundary is 0 regardless of s_boundary_dict.
         if s0 == 0.0:
@@ -283,6 +299,8 @@ class DimensionalParams:
             n_bumps=self.n_bumps,
             rho_bump_seed=self.rho_bump_seed,
             rho_initial=rho_init_nd,
+            s_initial=s_init_nd,
+            s_no_flux_bc=self.s_no_flux_bc,
         )
 
     @classmethod
@@ -340,8 +358,8 @@ def _make_rho_ic(params: "KellerSegelParams") -> np.ndarray:
     else:
         # Keep bumps at least sigma away from the boundary so the IC is smooth
         margin = params.rho_bump_sigma
-        cx = rng.uniform(margin, params.Lx - margin, size=params.n_bumps)
-        cy = rng.uniform(margin, params.Ly - margin, size=params.n_bumps)
+        cx = rng.uniform(params.Lx // 5, params.Lx - params.Lx // 5, size=params.n_bumps)
+        cy = rng.uniform(params.Ly // 5, params.Ly - params.Ly // 5, size=params.n_bumps)
         centres = list(zip(cx, cy))
 
     sig2 = 2.0 * params.rho_bump_sigma ** 2
@@ -378,9 +396,14 @@ def create_mesh_and_variables(
     # c starts at 0.0 — will build up from cell production (no-flux BCs)
     c.setValue(0.0)
 
-    # s starts at 0.0 — will reach steady state from Dirichlet BCs
-    s.setValue(0.0)
-    _apply_dirichlet_bcs(s, mesh, params.s_boundary)
+    # s: initialise from custom IC if provided, otherwise zero
+    if params.s_initial is not None:
+        s.setValue(np.asarray(params.s_initial).ravel())
+    else:
+        s.setValue(0.0)
+    # Apply Dirichlet BCs unless no-flux mode is requested (starvation phase)
+    if not params.s_no_flux_bc:
+        _apply_dirichlet_bcs(s, mesh, params.s_boundary)
 
     # rho: no-flux (zero Neumann) is FiPy's default -- no constrain needed
 
@@ -527,6 +550,10 @@ def _run_simulation_cpp(
     # Always pass IC as a pre-computed flat array (handles n_bumps > 1 and
     # custom rho_initial uniformly; C++ ignores rho_bump_* when present).
     d["rho_initial"] = _make_rho_ic(params).ravel().astype(np.float64)
+    # Optional s initial condition
+    if params.s_initial is not None:
+        d["s_initial"] = np.asarray(params.s_initial).ravel().astype(np.float64)
+    d["s_no_flux_bc"] = params.s_no_flux_bc
 
     progress_cb = None
     if progbar:

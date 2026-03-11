@@ -65,6 +65,8 @@ A three-variable Keller-Segel PDE system for *Dictyostelium* chemotaxis on a 2D 
 
 - **Multi-bump IC**: `n_bumps` (int, default 1) places that many Gaussian bumps at random positions. With `n_bumps=1` the bump stays at the domain centre (legacy behaviour). `rho_bump_seed` (int or None) seeds the RNG for reproducibility. The helper `_make_rho_ic(params)` generates the `(ny, nx)` IC array and is used by both backends.
 
+- **s carry-over between phases**: `s_initial` (2D array) sets the initial `s` field (useful for chaining phases). `s_no_flux_bc` (bool, default False) switches `s` from Dirichlet to zero-Neumann boundary conditions — used for the aggregation phase where starvation seals the domain (no nutrient source at boundaries). `DimensionalParams` exposes `s_initial_ug_per_mL` and `s_no_flux_bc`. The notebook chains the two phases by passing `result_growth.s_snapshots[-1] * dim_growth.s_boundary_ug_per_mL` as `s_initial_ug_per_mL`.
+
 ### Key design separation
 
 `c` drives chemotaxis (self-produced, no-flux BCs, not consumed) and `s` drives growth (externally supplied via Dirichlet BCs, consumed by cells). Mixing these roles breaks the gradient driving aggregation.
@@ -102,5 +104,6 @@ Both backends use flat index `k = j * nx + i` (row-major for a (ny, nx) grid). T
 - Reduce `dt` (e.g., `0.001`) when `chi` is large to avoid blow-up
 - `sweep_count=5` nonlinear sweeps per step handles the nonlinear coupling between `rho` and `c`
 - `s_boundary` accepts either a float (uniform on all edges) or a dict with keys `"left"`, `"right"`, `"top"`, `"bottom"` for spatially heterogeneous nutrient supply
+- `s_no_flux_bc=True` overrides Dirichlet with zero-Neumann BCs for `s` (aggregation/starvation phase); `s_initial` carries over the field from a prior phase
 - Aggregation instability requires `αχρ/(D_ρβ) >> 1`; if cells just diffuse, this ratio is too low
 - Volume-filling prevents blow-up but max density will asymptote cleanly to `rho_max`

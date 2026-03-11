@@ -49,7 +49,13 @@ void KSSolver::init_fields() {
         }
     }
     c_.setZero();
-    s_.setZero();
+    // s: use custom IC if provided, otherwise zero
+    if (!p_.s_initial.empty()) {
+        for (int k = 0; k < N_; ++k)
+            s_[k] = p_.s_initial[k];
+    } else {
+        s_.setZero();
+    }
     // Dirichlet BCs for s are enforced through the linear system, not pre-set
 }
 
@@ -149,36 +155,45 @@ KSSolver::SpMat KSSolver::assemble_s_matrix(VecXd& rhs_s) const {
 
             // West
             if (i == 0) {
-                double sv = bc("left");
-                diag           += 2.0*Ds/dx2;
-                rhs_s[k]       += 2.0*Ds/dx2 * sv;
+                if (!p_.s_no_flux_bc) {
+                    double sv = bc("left");
+                    diag     += 2.0*Ds/dx2;
+                    rhs_s[k] += 2.0*Ds/dx2 * sv;
+                }
+                // no-flux: boundary face omitted (zero flux)
             } else {
                 trips.push_back({k, idx(i-1,j), -Ds/dx2});
                 diag += Ds/dx2;
             }
             // East
             if (i == nx-1) {
-                double sv = bc("right");
-                diag           += 2.0*Ds/dx2;
-                rhs_s[k]       += 2.0*Ds/dx2 * sv;
+                if (!p_.s_no_flux_bc) {
+                    double sv = bc("right");
+                    diag     += 2.0*Ds/dx2;
+                    rhs_s[k] += 2.0*Ds/dx2 * sv;
+                }
             } else {
                 trips.push_back({k, idx(i+1,j), -Ds/dx2});
                 diag += Ds/dx2;
             }
             // South
             if (j == 0) {
-                double sv = bc("bottom");
-                diag           += 2.0*Ds/dy2;
-                rhs_s[k]       += 2.0*Ds/dy2 * sv;
+                if (!p_.s_no_flux_bc) {
+                    double sv = bc("bottom");
+                    diag     += 2.0*Ds/dy2;
+                    rhs_s[k] += 2.0*Ds/dy2 * sv;
+                }
             } else {
                 trips.push_back({k, idx(i,j-1), -Ds/dy2});
                 diag += Ds/dy2;
             }
             // North
             if (j == ny-1) {
-                double sv = bc("top");
-                diag           += 2.0*Ds/dy2;
-                rhs_s[k]       += 2.0*Ds/dy2 * sv;
+                if (!p_.s_no_flux_bc) {
+                    double sv = bc("top");
+                    diag     += 2.0*Ds/dy2;
+                    rhs_s[k] += 2.0*Ds/dy2 * sv;
+                }
             } else {
                 trips.push_back({k, idx(i,j+1), -Ds/dy2});
                 diag += Ds/dy2;
@@ -245,7 +260,9 @@ KSSolver::SpMat KSSolver::assemble_rho_matrix(VecXd& rhs_rho) const {
             const double chi_eff_x = chi * std::max(vf_x, 0.0);
 
             // SG correction (subtract diffusion, add SG)
-            const double Pe   = chi_eff_x * (c_[kr] - c_[k]) / Drho;
+            // Pe = v·h/D where v = χ·(c_R−c_L)/h; negate c difference so that
+            // B(−Pe)·ρ_L − B(Pe)·ρ_R gives the correct upwind flux towards higher c.
+            const double Pe   = chi_eff_x * (c_[k] - c_[kr]) / Drho;
             const double BPe  = bernoulli( Pe);
             const double BnPe = bernoulli(-Pe);
 
@@ -275,7 +292,7 @@ KSSolver::SpMat KSSolver::assemble_rho_matrix(VecXd& rhs_rho) const {
             const double vf_y = 1.0 - 0.5*(rho_old_[k] + rho_old_[kt]) / rho_max;
             const double chi_eff_y = chi * std::max(vf_y, 0.0);
 
-            const double Pe   = chi_eff_y * (c_[kt] - c_[k]) / Drho;
+            const double Pe   = chi_eff_y * (c_[k] - c_[kt]) / Drho;
             const double BPe  = bernoulli( Pe);
             const double BnPe = bernoulli(-Pe);
 

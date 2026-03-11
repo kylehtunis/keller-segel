@@ -37,6 +37,10 @@ struct KSParams {
     double rho_bump_sigma;
     // Optional custom IC (flat, column-major: idx = j*nx + i). Empty → use Gaussian bump.
     std::vector<double> rho_initial;
+    // Optional s IC (flat, col-major). Empty → zero.
+    std::vector<double> s_initial;
+    // When true, s uses no-flux (zero Neumann) BCs instead of Dirichlet.
+    bool s_no_flux_bc = false;
 
     // Time stepping
     double dt;
