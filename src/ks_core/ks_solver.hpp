@@ -75,14 +75,14 @@ private:
     int      N_;   // nx * ny
 
     // Field arrays (col-major: idx(i,j) = j*nx + i)
-    VecXd rho_, rho_old_, c_, s_;
+    VecXd rho_, rho_old_, c_, s_, s_old_;
 
     // ---- matrices --------------------------------------------------------
     // A_c_: D_c·L − β·I  (structure never changes → factorise once)
     SpMat A_c_;
     Eigen::SparseLU<SpMat> lu_c_;
 
-    // A_s_: D_s·L − μ_max·diag(ρ) + Dirichlet modifications
+    // A_s_: (1/dt)·I + D_s·L − μ_max·diag(ρ) + Dirichlet modifications
     // Sparsity pattern fixed after construction; numeric values change with ρ
     SpMat                  A_s_pattern_;   // pattern only (analysed once)
     Eigen::SparseLU<SpMat> lu_s_;

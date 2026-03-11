@@ -7,8 +7,8 @@ separate nutrient and self-produced chemoattractant, solved with FVM via FiPy on
 
 Three coupled PDEs (dimensionless form used by the solver):
   ∂ρ/∂t = D_ρ ∇²ρ - χ(1-ρ/ρ_max)∇·(ρ ∇c) + (μ_max/Y)·s·ρ·(1 - ρ/ρ_max)  (cell density)
-  0 = D_c ∇²c - βc + αρ                                           (cAMP, quasi-SS)
-  0 = D_s ∇²s - μ_max·s·ρ                                         (nutrient, quasi-SS)
+  0      = D_c ∇²c - βc + αρ                                       (cAMP, quasi-SS)
+  ∂s/∂t  = D_s ∇²s - μ_max·s·ρ                                     (nutrient, transient)
 
 Cells chemotax up the cAMP gradient (c), which they produce themselves (rate α),
 creating a positive feedback loop for aggregation. Growth is fueled by nutrient (s),
@@ -94,7 +94,7 @@ class KellerSegelParams:
     alpha: float = 1.0        # cAMP production rate by cells (conc/(min·density))
 
     # Nutrient/substrate parameters (external, Dirichlet BCs)
-    D_s: float = 0.012        # nutrient diffusion (mm²/min), ~half D_c
+    D_s: float = 0.001        # nutrient diffusion (mm²/min), slow (bacteria)
     # Boundary conditions for s (Dirichlet)
     # Scalar: same value on all edges
     # Dict: per-edge, e.g. {"left": 1.0, "right": 0.0, "top": 0.5, "bottom": 0.5}
@@ -161,8 +161,8 @@ class DimensionalParams:
     rho_initial_cells_per_mm2: object = None  # np.ndarray or None
 
     # --- Nutrient ---
-    D_s_mm2_per_min: float = 0.012       # 200 µm²/s small-molecule diffusion
-    K_s_ug_per_mL: float = 0.5           # Monod half-saturation constant
+    D_s_mm2_per_min: float = 0.001       # ~17 µm²/s slow bacterial diffusion
+    K_s_ug_per_mL: float = 2.0           # Monod half-saturation constant (= s_boundary)
     s_boundary_ug_per_mL: float = 2.0    # Dirichlet boundary nutrient concentration
     mu_max_per_min: float = 0.002        # max specific growth rate (~5.8 hr doubling)
 
@@ -242,8 +242,11 @@ class DimensionalParams:
         if self.rho_initial_cells_per_mm2 is not None:
             rho_init_nd = np.asarray(self.rho_initial_cells_per_mm2) / rho0
 
-        # Boundary condition for s: normalise scalar values; pass dict through
-        if self.s_boundary_dict is not None:
+        # Boundary condition for s: normalise scalar values; pass dict through.
+        # When s0=0 (no nutrient), boundary is 0 regardless of s_boundary_dict.
+        if s0 == 0.0:
+            s_bc = 0.0
+        elif self.s_boundary_dict is not None:
             if isinstance(self.s_boundary_dict, dict):
                 s_bc = {k: v / s0 for k, v in self.s_boundary_dict.items()}
             else:
@@ -398,20 +401,23 @@ def build_c_equation_steady(
     )
 
 
-def build_s_equation_steady(
+def build_s_equation(
     s: CellVariable,
     rho: CellVariable,
     params: KellerSegelParams,
 ) -> object:
-    """Build the quasi-steady-state nutrient equation.
+    """Build the transient nutrient equation.
 
-    Solves: 0 = D_s ∇²s - μ_max·s·ρ
+    Solves: ∂s/∂t = D_s ∇²s - μ_max·s·ρ
 
     Nutrient diffuses from Dirichlet boundaries and is consumed by cells.
-    Consumption is implicit in s (good for stability).
+    Transient (not quasi-SS) because nutrient diffusion is slow relative to
+    cell movement. Consumption is implicit in s for stability.
     """
-    return DiffusionTerm(coeff=params.D_s, var=s) + ImplicitSourceTerm(
-        coeff=-params.mu_max * rho, var=s
+    return (
+        TransientTerm(var=s)
+        == DiffusionTerm(coeff=params.D_s, var=s)
+        + ImplicitSourceTerm(coeff=-params.mu_max * rho, var=s)
     )
 
 
@@ -526,11 +532,9 @@ def _run_simulation_fipy(
 
     result = SimulationResult(params=params)
 
-    # Solve initial quasi-steady-state c and s (given initial rho)
+    # Solve initial quasi-steady-state c (s starts at 0, builds up transiently)
     eq_c = build_c_equation_steady(c, rho, params)
     eq_c.solve(var=c)
-    eq_s = build_s_equation_steady(s, rho, params)
-    eq_s.solve(var=s)
 
     # Record initial state
     _record_snapshot(result, 0.0, rho, c, s, mesh, params)
@@ -546,9 +550,10 @@ def _run_simulation_fipy(
         eq_c = build_c_equation_steady(c, rho, params)
         eq_c.solve(var=c)
 
-        # 2. Solve s to quasi-steady-state (nutrient: consumed by cells)
-        eq_s = build_s_equation_steady(s, rho, params)
-        eq_s.solve(var=s)
+        # 2. Advance s transiently (nutrient: diffuses slowly, consumed by cells)
+        s.updateOld()
+        eq_s = build_s_equation(s, rho, params)
+        eq_s.sweep(var=s, dt=params.dt)
 
         # 3. Advance rho using c gradient (chemotaxis) and s (growth)
         rho.updateOld()

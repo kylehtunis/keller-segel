@@ -12,7 +12,7 @@
 
 KSSolver::KSSolver(const KSParams& p)
     : p_(p), N_(p.nx * p.ny),
-      rho_(N_), rho_old_(N_), c_(N_), s_(N_)
+      rho_(N_), rho_old_(N_), c_(N_), s_(N_), s_old_(N_)
 {
     init_fields();
     assemble_c_matrix();
@@ -110,11 +110,14 @@ void KSSolver::assemble_c_matrix() {
 }
 
 // ===========================================================================
-// Matrix assembly — nutrient (s)
+// Matrix assembly — nutrient (s)  [TRANSIENT]
 //
-//   A_s · s = rhs_s
-//   A_s = D_s·L − μ_max·diag(ρ)   + Dirichlet modifications
-//   rhs_s encodes the Dirichlet values
+//   A_s · s^{n+1} = rhs_s
+//   A_s = (1/dt)·I + D_s·L − μ_max·diag(ρ)  + Dirichlet modifications
+//   rhs_s[k] = s_old[k]/dt  +  Dirichlet ghost-cell contributions
+//
+// Transient (not quasi-SS): nutrient diffusion across the domain is slow
+// relative to cell movement, so s must evolve step-by-step.
 //
 // Dirichlet ghost-cell on boundary face:
 //   flux through face = D_s · (s_boundary − s_cell) / (h/2)
@@ -127,6 +130,7 @@ KSSolver::SpMat KSSolver::assemble_s_matrix(VecXd& rhs_s) const {
     const double dx2 = p_.dx * p_.dx;
     const double dy2 = p_.dy * p_.dy;
     const double Ds  = p_.D_s;
+    const double dt_inv = 1.0 / p_.dt;
 
     rhs_s.setZero(N_);
     std::vector<Triplet> trips;
@@ -140,7 +144,8 @@ KSSolver::SpMat KSSolver::assemble_s_matrix(VecXd& rhs_s) const {
     for (int j = 0; j < ny; ++j) {
         for (int i = 0; i < nx; ++i) {
             int    k    = idx(i, j);
-            double diag = p_.mu_max * rho_[k];  // sink term
+            double diag = dt_inv + p_.mu_max * rho_[k];  // transient + sink
+            rhs_s[k]    = s_old_[k] * dt_inv;             // transient RHS
 
             // West
             if (i == 0) {
@@ -354,9 +359,8 @@ std::vector<double> KSSolver::snapshot_flat(const VecXd& v) const {
 KSSolver::SnapshotData KSSolver::run(ProgressCB progress) {
     SnapshotData out;
 
-    // Initial quasi-steady-state solve
+    // Initial quasi-steady-state solve for c (s starts at 0, builds up transiently)
     solve_c();
-    solve_s();
 
     // Record initial state (t = 0)
     out.times.push_back(0.0);
@@ -372,7 +376,8 @@ KSSolver::SnapshotData KSSolver::run(ProgressCB progress) {
         // 1. cAMP quasi-steady-state
         solve_c();
 
-        // 2. Nutrient quasi-steady-state
+        // 2. Advance nutrient transiently
+        s_old_ = s_;
         solve_s();
 
         // 3. Advance ρ with nonlinear sweeps
