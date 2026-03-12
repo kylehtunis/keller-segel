@@ -358,8 +358,8 @@ def _make_rho_ic(params: "KellerSegelParams") -> np.ndarray:
     else:
         # Keep bumps at least sigma away from the boundary so the IC is smooth
         margin = params.rho_bump_sigma
-        cx = rng.uniform(params.Lx // 5, params.Lx - params.Lx // 5, size=params.n_bumps)
-        cy = rng.uniform(params.Ly // 5, params.Ly - params.Ly // 5, size=params.n_bumps)
+        cx = rng.uniform(margin, params.Lx - margin, size=params.n_bumps)
+        cy = rng.uniform(margin, params.Ly - margin, size=params.n_bumps)
         centres = list(zip(cx, cy))
 
     sig2 = 2.0 * params.rho_bump_sigma ** 2
