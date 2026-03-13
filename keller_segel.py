@@ -120,6 +120,10 @@ class KellerSegelParams:
     # When True, s uses no-flux (zero Neumann) BCs instead of Dirichlet
     s_no_flux_bc: bool = False
 
+    # Starvation-dependent chemotaxis: chi_eff = chi / (1 + s / chi_s_half_sat)
+    # 0.0 = disabled (chi is constant, backward-compatible default)
+    chi_s_half_sat: float = 0.0
+
     @property
     def dx(self) -> float:
         return self.Lx / self.nx
@@ -159,7 +163,7 @@ class DimensionalParams:
 
     # --- Cell density ---
     D_rho_mm2_per_min: float = 5e-5      # random motility (50 µm²/min)
-    chi_mm2_per_nM_per_min: float = 1.8e-3   # chemotactic sensitivity (aggregation)
+    chi_mm2_per_nM_per_min: float = 1.8e-3   # chemotactic sensitivity
     rho_max_cells_per_mm2: float = 1e4   # close-packed monolayer (~10 µm cells)
     rho_background_cells_per_mm2: float = 1e3   # uniform background (10% of max)
     rho_bump_amplitude_cells_per_mm2: float = 2e3   # Gaussian IC perturbation
@@ -173,6 +177,11 @@ class DimensionalParams:
     s_initial_ug_per_mL: object = None  # np.ndarray or None
     # When True, s uses no-flux (zero Neumann) BCs instead of Dirichlet
     s_no_flux_bc: bool = False
+
+    # Starvation-dependent chemotaxis: chi_eff = chi / (1 + s / K_chi)
+    # 0.0 = disabled (constant chi, backward-compatible default)
+    # Suggested starting value: K_s_ug_per_mL (Monod half-sat, e.g. 2.0 µg/mL)
+    chi_s_half_sat_ug_per_mL: float = 0.0
 
     # --- Nutrient ---
     D_s_mm2_per_min: float = 0.003       # ~50 µm²/s bacterial diffusion
@@ -274,6 +283,13 @@ class DimensionalParams:
         else:
             s_bc = 1.0  # normalised boundary = 1 by construction
 
+        # Starvation-dependent chi: normalise K_chi by s_boundary
+        chi_s_half_sat_nd = (
+            self.chi_s_half_sat_ug_per_mL / s0
+            if (self.chi_s_half_sat_ug_per_mL > 0.0 and s0 > 0.0)
+            else 0.0
+        )
+
         return KellerSegelParams(
             Lx=Lx_nd,
             Ly=Ly_nd,
@@ -301,35 +317,7 @@ class DimensionalParams:
             rho_initial=rho_init_nd,
             s_initial=s_init_nd,
             s_no_flux_bc=self.s_no_flux_bc,
-        )
-
-    @classmethod
-    def growth_phase(cls) -> "DimensionalParams":
-        """Preset for the vegetative growth phase.
-
-        Cells are dividing on nutrient; chemotaxis is weak (10× lower chi than
-        aggregation phase). Growth dominates dynamics. Domain kept smaller for
-        faster iteration.
-        """
-        return cls(
-            chi_mm2_per_nM_per_min=1.8e-4,   # 10× weaker than aggregation
-            mu_max_per_min=0.002,
-            total_time_min=600.0,             # 10 hours to see colony growth
-        )
-
-    @classmethod
-    def aggregation_phase(cls) -> "DimensionalParams":
-        """Preset for the starvation/aggregation phase.
-
-        Cells are starved (nutrient depleted), cAMP relay is active, strong
-        chemotaxis drives stream formation and aggregate nucleation. Growth is
-        negligible (mu_max ≈ 0). Use small dt if chi is increased further.
-        """
-        return cls(
-            chi_mm2_per_nM_per_min=1.8e-3,   # full aggregation-phase sensitivity
-            mu_max_per_min=0.0,               # no growth during starvation
-            s_boundary_ug_per_mL=0.0,         # no nutrient at boundaries
-            total_time_min=120.0,             # 2 hours to see aggregation
+            chi_s_half_sat=chi_s_half_sat_nd,
         )
 
 
@@ -495,6 +483,9 @@ def build_rho_equation(
     growth_rate = (params.mu_max / params.Y) * s  # nutrient-driven growth
     # Volume-filling: chemotactic velocity scaled by available space
     volume_factor = 1.0 - rho.faceValue / params.rho_max
+    # TODO: implement starvation-dependent chi for FiPy backend
+    # chi_eff = params.chi / (1 + s.faceValue / params.chi_s_half_sat)
+    # when params.chi_s_half_sat > 0
     chemotaxis_coeff = params.chi * volume_factor * c.faceGrad
     return (
         TransientTerm(var=rho)
@@ -554,6 +545,7 @@ def _run_simulation_cpp(
     if params.s_initial is not None:
         d["s_initial"] = np.asarray(params.s_initial).ravel().astype(np.float64)
     d["s_no_flux_bc"] = params.s_no_flux_bc
+    d["chi_s_half_sat"] = params.chi_s_half_sat
 
     progress_cb = None
     if progbar:

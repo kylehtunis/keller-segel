@@ -67,6 +67,8 @@ A three-variable Keller-Segel PDE system for *Dictyostelium* chemotaxis on a 2D 
 
 - **s carry-over between phases**: `s_initial` (2D array) sets the initial `s` field (useful for chaining phases). `s_no_flux_bc` (bool, default False) switches `s` from Dirichlet to zero-Neumann boundary conditions — used for the aggregation phase where starvation seals the domain (no nutrient source at boundaries). `DimensionalParams` exposes `s_initial_ug_per_mL` and `s_no_flux_bc`. The notebook chains the two phases by passing `result_growth.s_snapshots[-1] * dim_growth.s_boundary_ug_per_mL` as `s_initial_ug_per_mL`.
 
+- **Starvation-dependent chemotaxis**: `chi_s_half_sat` (dimensionless) modulates χ by local nutrient level: `χ_eff = χ / (1 + s / chi_s_half_sat)`. When `s = 0` (starvation), cells chemotax at full strength χ; when `s = chi_s_half_sat`, at half strength. `DimensionalParams` exposes `chi_s_half_sat_ug_per_mL` (physical units; a natural starting value is `K_s_ug_per_mL = 2.0 µg/mL`). Default `0.0` disables the feature (backward-compatible). **C++ backend only** — FiPy backend has a TODO stub.
+
 ### Key design separation
 
 `c` drives chemotaxis (self-produced, no-flux BCs, not consumed) and `s` drives growth (externally supplied via Dirichlet BCs, consumed by cells). Mixing these roles breaks the gradient driving aggregation.

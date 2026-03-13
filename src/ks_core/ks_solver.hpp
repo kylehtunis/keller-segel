@@ -15,11 +15,12 @@ struct KSParams {
     double Lx, Ly;
 
     // Cell density (ρ) PDE
-    double D_rho;    // random motility / D_c
-    double chi;      // chemotactic sensitivity × c_ref / D_c
-    double mu_max;   // max specific growth rate / β
-    double Y;        // normalised Monod half-saturation  K_s / s_boundary
-    double rho_max;  // always 1.0 in dimensionless form
+    double D_rho;           // random motility / D_c
+    double chi;             // chemotactic sensitivity × c_ref / D_c
+    double chi_s_half_sat;  // nutrient half-sat for chi modulation (0 = disabled)
+    double mu_max;          // max specific growth rate / β
+    double Y;               // normalised Monod half-saturation  K_s / s_boundary
+    double rho_max;         // always 1.0 in dimensionless form
 
     // cAMP (c) PDE
     double D_c;      // always 1.0 in dimensionless form

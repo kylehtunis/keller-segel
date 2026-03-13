@@ -21,9 +21,10 @@ static KSParams dict_to_params(const py::dict& d) {
     p.dy = p.Ly / p.ny;
 
     // Cell density
-    p.D_rho   = d["D_rho"].cast<double>();
-    p.chi     = d["chi"].cast<double>();
-    p.mu_max  = d["mu_max"].cast<double>();
+    p.D_rho          = d["D_rho"].cast<double>();
+    p.chi            = d["chi"].cast<double>();
+    p.chi_s_half_sat = d.contains("chi_s_half_sat") ? d["chi_s_half_sat"].cast<double>() : 0.0;
+    p.mu_max         = d["mu_max"].cast<double>();
     p.Y       = d["Y"].cast<double>();
     p.rho_max = d["rho_max"].cast<double>();
 

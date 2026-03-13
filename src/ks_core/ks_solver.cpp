@@ -231,6 +231,7 @@ KSSolver::SpMat KSSolver::assemble_rho_matrix(VecXd& rhs_rho) const {
     const double dy2  = p_.dy * p_.dy;
     const double Drho    = p_.D_rho;
     const double chi     = p_.chi;
+    const double chi_ks  = p_.chi_s_half_sat;  // 0 = disabled
     const double rho_max = p_.rho_max;
     const double dt      = p_.dt;
 
@@ -257,7 +258,10 @@ KSSolver::SpMat KSSolver::assemble_rho_matrix(VecXd& rhs_rho) const {
             // Volume-filling: scale chi by (1 - rho_face/rho_max)
             // Use average of the two cell values at the face
             const double vf_x = 1.0 - 0.5*(rho_old_[k] + rho_old_[kr]) / rho_max;
-            const double chi_eff_x = chi * std::max(vf_x, 0.0);
+            // Starvation modulation: chi_eff = chi / (1 + s_face / K_chi)
+            const double s_face_x = 0.5 * (s_[k] + s_[kr]);
+            const double starv_x = (chi_ks > 0.0) ? 1.0 / (1.0 + s_face_x / chi_ks) : 1.0;
+            const double chi_eff_x = chi * std::max(vf_x, 0.0) * starv_x;
 
             // SG correction (subtract diffusion, add SG)
             // Pe = v·h/D where v = χ·(c_R−c_L)/h; negate c difference so that
@@ -290,7 +294,10 @@ KSSolver::SpMat KSSolver::assemble_rho_matrix(VecXd& rhs_rho) const {
 
             // Volume-filling: scale chi by (1 - rho_face/rho_max)
             const double vf_y = 1.0 - 0.5*(rho_old_[k] + rho_old_[kt]) / rho_max;
-            const double chi_eff_y = chi * std::max(vf_y, 0.0);
+            // Starvation modulation: chi_eff = chi / (1 + s_face / K_chi)
+            const double s_face_y = 0.5 * (s_[k] + s_[kt]);
+            const double starv_y = (chi_ks > 0.0) ? 1.0 / (1.0 + s_face_y / chi_ks) : 1.0;
+            const double chi_eff_y = chi * std::max(vf_y, 0.0) * starv_y;
 
             const double Pe   = chi_eff_y * (c_[k] - c_[kt]) / Drho;
             const double BPe  = bernoulli( Pe);
